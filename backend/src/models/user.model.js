@@ -18,7 +18,8 @@ const userSchema = new mongoose.Schema(
     },
     profilePic: {
       type: String,
-      default: "",
+      default:
+        "https://res.cloudinary.com/dtml0aorx/image/upload/v1761055139/avatar_edgdft.png",
     },
   },
   { timestamps: true }
