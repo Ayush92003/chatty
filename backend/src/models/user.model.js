@@ -21,6 +21,19 @@ const userSchema = new mongoose.Schema(
       default:
         "https://res.cloudinary.com/dtml0aorx/image/upload/v1761055139/avatar_edgdft.png",
     },
+    contacts: [
+      {
+        user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        displayName: { type: String }, // custom name for this contact
+        isSaved : {type : Boolean},
+      },
+    ],
+    recentChats: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
   },
   { timestamps: true }
 );
