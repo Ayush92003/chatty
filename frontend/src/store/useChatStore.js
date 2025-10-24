@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
@@ -5,12 +6,24 @@ import { useAuthStore } from "./useAuthStore";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
-  users: [], 
+  users: [],
   selectedUser: null,
+  selectedMessages: [], // ✅ Multi-select
+  isSelectMode: false, // ✅ Multi-select mode
   isUsersLoading: false,
   isMessagesLoading: false,
+  isSending: false,
+  isTyping: false, // ✅ Typing indicator
 
+  // ------------------- BASIC SETTERS -------------------
+  setMessages: (messages) => set({ messages }),
   setUsers: (users) => set({ users }),
+  setSelectedUser: (selectedUser) => set({ selectedUser }),
+  setIsTyping: (typing) => set({ isTyping: typing }),
+  setSelectedMessages: (selectedMessages) => set({ selectedMessages }),
+  setIsSelectMode: (mode) => set({ isSelectMode: mode }),
+
+  // ------------------- USERS -------------------
   getUsers: async () => {
     set({ isUsersLoading: true });
     try {
@@ -35,13 +48,14 @@ export const useChatStore = create((set, get) => ({
 
       set({ users: mergedUsers });
     } catch (error) {
-      console.error("Error fetching users:", error);
+      console.error(error);
       toast.error(error.response?.data?.message || "Failed to fetch users");
     } finally {
       set({ isUsersLoading: false });
     }
   },
 
+  // ------------------- MESSAGES -------------------
   getMessages: async (userId) => {
     set({ isMessagesLoading: true });
     try {
@@ -55,43 +69,111 @@ export const useChatStore = create((set, get) => ({
   },
 
   sendMessage: async (messageData) => {
-    const { selectedUser, messages } = get();
+    const { selectedUser } = get();
     try {
+      set({ isSending: true });
+
       const res = await axiosInstance.post(
         `/messages/send/${selectedUser._id}`,
         messageData
       );
-      set({ messages: [...messages, res.data] });
-      get().getUsers(); 
+
+      // ❌ Don't push manually, socket will update messages
+      set({ isSending: false });
+
+      get().getUsers?.();
     } catch (error) {
+      console.error(error);
+      set({ isSending: false });
       toast.error(error.response?.data?.message || "Failed to send message");
     }
   },
 
+  // ------------------- SOCKET LISTENERS -------------------
   subscribeToMessages: () => {
-    const socket = useAuthStore.getState().socket;
+    const { socket, authUser } = useAuthStore.getState();
     if (!socket) return;
 
+    // Remove old listeners to avoid duplicates
     socket.off("newMessage");
+    socket.off("messageDeletedForMe");
+    socket.off("messageDeletedForEveryone");
+    socket.off("userTyping");
+    socket.off("userStopTyping");
+
+    // 🔹 New message
     socket.on("newMessage", (newMessage) => {
       const { selectedUser, messages } = get();
-
       if (
         selectedUser &&
         (newMessage.senderId === selectedUser._id ||
           newMessage.receiverId === selectedUser._id)
       ) {
-        set({ messages: [...messages, newMessage] });
+        const exists = messages.some((m) => m._id === newMessage._id);
+        if (!exists) set({ messages: [...messages, newMessage] });
       }
-
       get().getUsers();
+    });
+
+    // 🔹 Delete for Me
+    socket.on("messageDeletedForMe", (deletedMessageId) => {
+      const { messages } = get();
+      set({
+        messages: Array.isArray(messages)
+          ? messages.filter((m) => m._id !== deletedMessageId)
+          : [],
+      });
+    });
+
+    // 🔹 Delete for Everyone
+    socket.on("messageDeletedForEveryone", (deletedMessage) => {
+      const { messages } = get();
+      set({
+        messages: Array.isArray(messages)
+          ? messages.map((m) =>
+              m._id === deletedMessage._id
+                ? {
+                    ...m,
+                    text: "This message was deleted",
+                    isDeletedForEveryone: true,
+                  }
+                : m
+            )
+          : [],
+      });
+    });
+
+    // 🔹 Typing indicator
+    socket.on("userTyping", ({ userId }) => {
+      const { selectedUser } = get();
+      if (selectedUser?._id === userId) set({ isTyping: true });
+    });
+
+    socket.on("userStopTyping", ({ userId }) => {
+      const { selectedUser } = get();
+      if (selectedUser?._id === userId) set({ isTyping: false });
     });
   },
 
   unsubscribeFromMessages: () => {
-    const socket = useAuthStore.getState().socket;
-    if (socket) socket.off("newMessage");
+    const { socket } = useAuthStore.getState();
+    if (!socket) return;
+
+    socket.off("newMessage");
+    socket.off("messageDeletedForMe");
+    socket.off("messageDeletedForEveryone");
+    socket.off("userTyping");
+    socket.off("userStopTyping");
   },
 
-  setSelectedUser: (selectedUser) => set({ selectedUser }),
+  // ------------------- TYPING EVENTS -------------------
+  sendTyping: (receiverId) => {
+    const { socket } = useAuthStore.getState();
+    if (socket) socket.emit("typing", receiverId);
+  },
+
+  sendStopTyping: (receiverId) => {
+    const { socket } = useAuthStore.getState();
+    if (socket) socket.emit("stopTyping", receiverId);
+  },
 }));

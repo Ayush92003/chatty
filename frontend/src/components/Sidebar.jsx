@@ -85,7 +85,6 @@ const Sidebar = () => {
         {filteredUsers.length > 0 ? (
           filteredUsers.map((user) => {
             const isSaved = user.isSaved ?? false; 
-            console.log(isSaved);
             return (
               <div
                 key={user._id}

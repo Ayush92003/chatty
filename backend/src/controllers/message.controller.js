@@ -3,21 +3,18 @@ import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 
-// GET sidebar users
+// ✅ Get sidebar users
 export const getUsersForSidebar = async (req, res) => {
   try {
     const loggedInUserId = req.user._id;
 
     const user = await User.findById(loggedInUserId).select("recentChats");
-
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Fetch user details for recentChats IDs
     const recentUsers = await User.find({
       _id: { $in: user.recentChats || [] },
     }).select("fullName email profilePic _id");
 
-    // Sidebar users = recentChats except logged-in user
     const sidebarUsers = recentUsers.filter(
       (u) => u._id.toString() !== loggedInUserId.toString()
     );
@@ -29,7 +26,7 @@ export const getUsersForSidebar = async (req, res) => {
   }
 };
 
-// GET messages between logged-in user and another user
+// ✅ Get messages between two users
 export const getMessages = async (req, res) => {
   try {
     const { id: userToChatId } = req.params;
@@ -40,7 +37,8 @@ export const getMessages = async (req, res) => {
         { senderId: myId, receiverId: userToChatId },
         { senderId: userToChatId, receiverId: myId },
       ],
-    }).sort({ createdAt: 1 }); // Sort by oldest first
+      deletedFor: { $ne: myId },
+    }).sort({ createdAt: 1 });
 
     res.status(200).json(messages);
   } catch (error) {
@@ -49,7 +47,7 @@ export const getMessages = async (req, res) => {
   }
 };
 
-// SEND message
+// ✅ Send message
 export const sendMessage = async (req, res) => {
   try {
     const { text, image } = req.body;
@@ -69,16 +67,14 @@ export const sendMessage = async (req, res) => {
       }
     }
 
-    // Save message
-    const newMessage = new Message({
+    const newMessage = await Message.create({
       senderId,
       receiverId,
       text,
       image: imageUrl,
     });
-    await newMessage.save();
 
-    // Update recentChats for both users (avoid duplicates)
+    // Update recentChats
     await User.findByIdAndUpdate(senderId, {
       $addToSet: { recentChats: receiverId },
     });
@@ -86,14 +82,100 @@ export const sendMessage = async (req, res) => {
       $addToSet: { recentChats: senderId },
     });
 
-    // Emit real-time message to receiver
+    // ✅ Emit to both sender & receiver sockets
     const receiverSocketId = getReceiverSocketId(receiverId);
+    const senderSocketId = getReceiverSocketId(senderId);
+
     if (receiverSocketId)
       io.to(receiverSocketId).emit("newMessage", newMessage);
+    if (senderSocketId) io.to(senderSocketId).emit("newMessage", newMessage);
 
     res.status(201).json(newMessage);
   } catch (error) {
     console.error("SendMessage failed:", error.message);
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// ✅ Delete message for me
+export const deleteMessageForMe = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    if (!message.deletedFor.includes(userId)) {
+      message.deletedFor.push(userId);
+      await message.save();
+    }
+
+    // Emit delete event to self (for instant UI refresh)
+    const selfSocket = getReceiverSocketId(userId);
+    if (selfSocket) io.to(selfSocket).emit("messageDeletedForMe", message._id);
+
+    res.json({
+      message: "Message deleted for you",
+      deletedMessageId: message._id,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to delete message" });
+  }
+};
+
+// ✅ Delete message for everyone
+export const deleteMessageForEveryone = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const message = await Message.findById(id);
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    if (message.senderId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    message.text = "deleted";
+    message.isDeletedForEveryone = true;
+    await message.save();
+
+    const senderSocketId = getReceiverSocketId(message.senderId);
+    const receiverSocketId = getReceiverSocketId(message.receiverId);
+
+    // ✅ Emit event to both sender & receiver
+    io.emit("messageDeletedForEveryone", message);
+
+    res.json({
+      message: "Message deleted for everyone",
+      deletedMessage: message,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to delete message" });
+  }
+};
+
+
+// DELETE /messages/clear/:userId/for-me
+export const clearChatForMe = async (req, res) => {
+  try {
+    const userId = req.user._id; // logged-in user
+    const chatWithId = req.params.userId;
+
+    // Delete all messages where logged-in user is sender or receiver with chatWithId
+    await Message.deleteMany({
+      $or: [
+        { senderId: userId, receiverId: chatWithId },
+        { senderId: chatWithId, receiverId: userId },
+      ],
+    });
+
+    res.status(200).json({ message: "Chat cleared successfully" });
+  } catch (error) {
+    console.error("Error clearing chat:", error);
+    res.status(500).json({ message: "Failed to clear chat" });
   }
 };
