@@ -1,7 +1,7 @@
 /* eslint-disable no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
 import { useEffect, useRef, useState } from "react";
-import { FaTrash, FaCopy, FaEdit } from "react-icons/fa";
+import { FaTrash, FaCopy, FaEdit, FaTimes } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { useChatStore } from "../store/useChatStore";
@@ -33,7 +33,7 @@ const ChatContainer = () => {
   const messageEndRef = useRef(null);
   const actionRef = useRef(null);
   const pressTimer = useRef(null);
-  const lastTapRef = useRef(0); // ✅ ref for double-tap timing
+  const lastTapRef = useRef(0);
 
   const [showActionsFor, setShowActionsFor] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -42,6 +42,7 @@ const ChatContainer = () => {
     left: "50%",
     translateX: "-50%",
   });
+  const [zoomedImage, setZoomedImage] = useState(null); // ✅ Zoomed image state
 
   // ------------------- FETCH MESSAGES -------------------
   useEffect(() => {
@@ -149,7 +150,7 @@ const ChatContainer = () => {
           ? prev.filter((id) => id !== msgId)
           : [...(prev || []), msgId]
       );
-      lastTapRef.current = 0; // reset after double-tap
+      lastTapRef.current = 0;
     } else {
       // Long press → start select mode
       pressTimer.current = setTimeout(() => {
@@ -159,7 +160,7 @@ const ChatContainer = () => {
             ? prev
             : [...(prev || []), msgId]
         );
-        if (navigator.vibrate) navigator.vibrate(50); // haptic feedback
+        if (navigator.vibrate) navigator.vibrate(50);
       }, 600);
 
       lastTapRef.current = currentTime;
@@ -308,7 +309,11 @@ const ChatContainer = () => {
                       setSelectedMessages([...selectedMessages, message._id]);
                     }
                   } else {
-                    !isDeleted && setShowActionsFor(message._id);
+                    if (!isDeleted && message.image) {
+                      setZoomedImage(message.image); // ✅ Open zoom modal
+                    } else if (!isDeleted) {
+                      setShowActionsFor(message._id);
+                    }
                   }
                 }}
                 onDoubleClick={() => {
@@ -365,6 +370,33 @@ const ChatContainer = () => {
       </div>
 
       <MessageInput />
+
+      {/* Zoomed Image Modal */}
+      <AnimatePresence>
+        {zoomedImage && (
+          <motion.div
+            key="zoom-modal"
+            className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="relative">
+              <img
+                src={zoomedImage}
+                alt="Zoomed"
+                className="max-h-[90vh] max-w-[90vw] rounded-lg"
+              />
+              <button
+                className="absolute top-2 right-2 text-white text-xl p-1 bg-black/50 rounded-full"
+                onClick={() => setZoomedImage(null)}
+              >
+                <FaTimes />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Modal */}
       {showDeleteModal && (
