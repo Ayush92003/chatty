@@ -15,24 +15,25 @@ import TypingIndicator from "./TypingIndicator";
 
 const ChatContainer = () => {
   const {
-    messages,
+    messages = [],
     getMessages,
     isMessagesLoading,
     selectedUser,
     subscribeToMessages,
     unsubscribeFromMessages,
     isTyping,
-    selectedMessages,
+    selectedMessages = [],
     setSelectedMessages,
     isSelectMode,
     setIsSelectMode,
     deleteSelectedMessages,
-    sendMessage,
   } = useChatStore();
 
   const { authUser } = useAuthStore();
   const messageEndRef = useRef(null);
   const actionRef = useRef(null);
+  const pressTimer = useRef(null);
+
   const [showActionsFor, setShowActionsFor] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -40,6 +41,7 @@ const ChatContainer = () => {
     left: "50%",
     translateX: "-50%",
   });
+  const [lastTap, setLastTap] = useState(0); // for mobile double tap
 
   // ------------------- FETCH MESSAGES -------------------
   useEffect(() => {
@@ -87,12 +89,16 @@ const ChatContainer = () => {
 
   // ------------------- EXIT SELECT MODE -------------------
   useEffect(() => {
-    if (selectedMessages.length === 0 && isSelectMode) {
+    if (
+      Array.isArray(selectedMessages) &&
+      selectedMessages.length === 0 &&
+      isSelectMode
+    ) {
       setIsSelectMode(false);
     }
   }, [selectedMessages, isSelectMode]);
 
-  // ------------------- DELETE MODALS -------------------
+  // ------------------- DELETE FUNCTIONS -------------------
   const handleDeleteForMe = async (msgId) => {
     try {
       await axiosInstance.delete(`/messages/${msgId}/for-me`);
@@ -130,17 +136,38 @@ const ChatContainer = () => {
     setShowActionsFor(null);
   };
 
-  // ------------------- TOUCH LONG PRESS -------------------
-  let pressTimer = null;
+  // ------------------- TOUCH + LONG PRESS + DOUBLE TAP -------------------
   const handleTouchStart = (msgId) => {
-    pressTimer = setTimeout(() => {
+    const currentTime = new Date().getTime();
+    const tapLength = currentTime - lastTap;
+
+    // Double-tap → toggle selection
+    if (tapLength < 300 && tapLength > 0) {
       setIsSelectMode(true);
       setSelectedMessages((prev) =>
-        prev.includes(msgId) ? prev : [...prev, msgId]
+        Array.isArray(prev) && prev.includes(msgId)
+          ? prev.filter((id) => id !== msgId)
+          : [...(prev || []), msgId]
       );
-    }, 600);
+    } else {
+      // Long press → start select mode
+      pressTimer.current = setTimeout(() => {
+        setIsSelectMode(true);
+        setSelectedMessages((prev) =>
+          Array.isArray(prev) && prev.includes(msgId)
+            ? prev
+            : [...(prev || []), msgId]
+        );
+        if (navigator.vibrate) navigator.vibrate(50); // haptic feedback
+      }, 600);
+    }
+
+    setLastTap(currentTime);
   };
-  const handleTouchEnd = () => clearTimeout(pressTimer);
+
+  const handleTouchEnd = () => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+  };
 
   // ------------------- LOADING SKELETON -------------------
   if (isMessagesLoading) {
@@ -153,36 +180,38 @@ const ChatContainer = () => {
     );
   }
 
-  // ------------------- CHAT RENDER -------------------
+  // ------------------- CHAT UI -------------------
   return (
     <div className="flex-1 flex flex-col overflow-auto relative">
       <ChatHeader />
 
       {/* Multi-select Toolbar */}
-      {isSelectMode && selectedMessages.length > 0 && (
-        <div className="absolute top-0 left-0 w-full bg-base-200 border-b border-base-300 z-40 flex items-center justify-between px-4 py-3">
-          <span className="text-sm font-medium">
-            {selectedMessages.length} selected
-          </span>
-          <div className="flex gap-2">
-            <button
-              className="btn btn-error btn-sm text-white"
-              onClick={deleteSelectedMessages}
-            >
-              Delete
-            </button>
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={() => {
-                setSelectedMessages([]);
-                setIsSelectMode(false);
-              }}
-            >
-              Cancel
-            </button>
+      {isSelectMode &&
+        Array.isArray(selectedMessages) &&
+        selectedMessages.length > 0 && (
+          <div className="absolute top-0 left-0 w-full bg-base-200 border-b border-base-300 z-40 flex items-center justify-between px-4 py-3">
+            <span className="text-sm font-medium">
+              {selectedMessages.length} selected
+            </span>
+            <div className="flex gap-2">
+              <button
+                className="btn btn-error btn-sm text-white"
+                onClick={deleteSelectedMessages}
+              >
+                Delete
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setSelectedMessages([]);
+                  setIsSelectMode(false);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Floating Action Modal */}
       <AnimatePresence>
@@ -205,7 +234,7 @@ const ChatContainer = () => {
               className="flex items-center gap-2 px-3 py-2 rounded hover:bg-base-200 transition"
               onClick={() =>
                 handleCopyMessage(
-                  messages.find((m) => m._id === showActionsFor)?.text
+                  messages.find((m) => m._id === showActionsFor)?.text || ""
                 )
               }
             >
@@ -260,6 +289,7 @@ const ChatContainer = () => {
 
               <div
                 className={`chat-bubble relative cursor-pointer break-words max-w-[75%] sm:max-w-[60%] px-3 py-2 transition ${
+                  Array.isArray(selectedMessages) &&
                   selectedMessages.includes(message._id)
                     ? "bg-primary/30 border border-primary"
                     : "hover:bg-base-200"
@@ -307,7 +337,6 @@ const ChatContainer = () => {
           );
         })}
 
-        {/* Typing indicator */}
         <AnimatePresence>
           {isTyping && selectedUser && (
             <motion.div
@@ -337,43 +366,38 @@ const ChatContainer = () => {
       <MessageInput />
 
       {/* Delete Modal */}
-      <input
-        type="checkbox"
-        id="delete-modal"
-        className="modal-toggle"
-        checked={showDeleteModal}
-        readOnly
-      />
-      <div className="modal">
-        <div className="modal-box w-80 max-w-[90vw] p-5">
-          <h3 className="font-bold text-lg text-center mb-4">
-            Delete Message?
-          </h3>
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={() => handleDeleteForMe(deleteTarget)}
-              className="text-red-500 text-base w-full text-left hover:bg-red-100 hover:text-red-600 px-2 py-1 rounded-xl transition-colors duration-200"
-            >
-              Delete for Me
-            </button>
-            {messages.find((m) => m._id === deleteTarget)?.senderId ===
-              authUser._id && (
+      {showDeleteModal && (
+        <div className="modal modal-open">
+          <div className="modal-box w-80 max-w-[90vw] p-5">
+            <h3 className="font-bold text-lg text-center mb-4">
+              Delete Message?
+            </h3>
+            <div className="flex flex-col gap-2">
               <button
-                onClick={() => handleDeleteForEveryone(deleteTarget)}
-                className="text-red-500 text-base w-full text-left hover:bg-red-100 hover:text-red-600 px-2 py-1 rounded transition-colors duration-200"
+                onClick={() => handleDeleteForMe(deleteTarget)}
+                className="text-red-500 text-base w-full text-left hover:bg-red-100 hover:text-red-600 px-2 py-1 rounded-xl transition-colors duration-200"
               >
-                Delete for Everyone
+                Delete for Me
               </button>
-            )}
-            <button
-              onClick={() => closeDeleteModal()}
-              className="text-gray-600 text-base w-full text-left hover:bg-gray-100 px-2 py-1 rounded-xl transition-colors duration-200"
-            >
-              Cancel
-            </button>
+              {messages.find((m) => m._id === deleteTarget)?.senderId ===
+                authUser._id && (
+                <button
+                  onClick={() => handleDeleteForEveryone(deleteTarget)}
+                  className="text-red-500 text-base w-full text-left hover:bg-red-100 hover:text-red-600 px-2 py-1 rounded transition-colors duration-200"
+                >
+                  Delete for Everyone
+                </button>
+              )}
+              <button
+                onClick={closeDeleteModal}
+                className="text-gray-600 text-base w-full text-left hover:bg-gray-100 px-2 py-1 rounded-xl transition-colors duration-200"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

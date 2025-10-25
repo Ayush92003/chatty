@@ -8,20 +8,23 @@ export const useChatStore = create((set, get) => ({
   messages: [],
   users: [],
   selectedUser: null,
-  selectedMessages: [], // ✅ Multi-select
-  isSelectMode: false, // ✅ Multi-select mode
+  selectedMessages: [], // ✅ initialized as empty array
+  isSelectMode: false,
   isUsersLoading: false,
   isMessagesLoading: false,
   isSending: false,
-  isTyping: false, // ✅ Typing indicator
+  isTyping: false,
 
   // ------------------- BASIC SETTERS -------------------
   setMessages: (messages) => set({ messages }),
   setUsers: (users) => set({ users }),
   setSelectedUser: (selectedUser) => set({ selectedUser }),
   setIsTyping: (typing) => set({ isTyping: typing }),
-  setSelectedMessages: (selectedMessages) => set({ selectedMessages }),
-  setIsSelectMode: (mode) => set({ isSelectMode: mode }),
+  setSelectedMessages: (selectedMessages) =>
+    set({
+      selectedMessages: Array.isArray(selectedMessages) ? selectedMessages : [],
+    }),
+  setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
 
   // ------------------- USERS -------------------
   getUsers: async () => {
@@ -39,8 +42,8 @@ export const useChatStore = create((set, get) => ({
       const recentRes = await axiosInstance.get("/messages/users");
       const recentChats =
         recentRes.data
-          .filter((u) => !savedContacts.find((c) => c._id === u._id))
-          .map((user) => ({ ...user, isSaved: false })) || [];
+          ?.filter((u) => !savedContacts.find((c) => c._id === u._id))
+          ?.map((user) => ({ ...user, isSaved: false })) || [];
 
       const mergedUsers = [...savedContacts, ...recentChats].filter(
         (user) => user._id !== authUser._id
@@ -60,7 +63,7 @@ export const useChatStore = create((set, get) => ({
     set({ isMessagesLoading: true });
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
-      set({ messages: res.data });
+      set({ messages: Array.isArray(res.data) ? res.data : [] });
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to fetch messages");
     } finally {
@@ -68,8 +71,11 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  // ------------------- SEND MESSAGE -------------------
   sendMessage: async (messageData) => {
     const { selectedUser } = get();
+    if (!selectedUser?._id) return;
+
     try {
       set({ isSending: true });
 
@@ -78,9 +84,10 @@ export const useChatStore = create((set, get) => ({
         messageData
       );
 
-      // ❌ Don't push manually, socket will update messages
+      // socket se update aayega
       set({ isSending: false });
 
+      // update user list (recent chat move up)
       get().getUsers?.();
     } catch (error) {
       console.error(error);
@@ -109,8 +116,9 @@ export const useChatStore = create((set, get) => ({
         (newMessage.senderId === selectedUser._id ||
           newMessage.receiverId === selectedUser._id)
       ) {
-        const exists = messages.some((m) => m._id === newMessage._id);
-        if (!exists) set({ messages: [...messages, newMessage] });
+        const safeMessages = Array.isArray(messages) ? messages : [];
+        const exists = safeMessages.some((m) => m._id === newMessage._id);
+        if (!exists) set({ messages: [...safeMessages, newMessage] });
       }
       get().getUsers();
     });
@@ -118,28 +126,26 @@ export const useChatStore = create((set, get) => ({
     // 🔹 Delete for Me
     socket.on("messageDeletedForMe", (deletedMessageId) => {
       const { messages } = get();
+      const safeMessages = Array.isArray(messages) ? messages : [];
       set({
-        messages: Array.isArray(messages)
-          ? messages.filter((m) => m._id !== deletedMessageId)
-          : [],
+        messages: safeMessages.filter((m) => m._id !== deletedMessageId),
       });
     });
 
     // 🔹 Delete for Everyone
     socket.on("messageDeletedForEveryone", (deletedMessage) => {
       const { messages } = get();
+      const safeMessages = Array.isArray(messages) ? messages : [];
       set({
-        messages: Array.isArray(messages)
-          ? messages.map((m) =>
-              m._id === deletedMessage._id
-                ? {
-                    ...m,
-                    text: "This message was deleted",
-                    isDeletedForEveryone: true,
-                  }
-                : m
-            )
-          : [],
+        messages: safeMessages.map((m) =>
+          m._id === deletedMessage._id
+            ? {
+                ...m,
+                text: "This message was deleted",
+                isDeletedForEveryone: true,
+              }
+            : m
+        ),
       });
     });
 
@@ -169,11 +175,11 @@ export const useChatStore = create((set, get) => ({
   // ------------------- TYPING EVENTS -------------------
   sendTyping: (receiverId) => {
     const { socket } = useAuthStore.getState();
-    if (socket) socket.emit("typing", receiverId);
+    if (socket && receiverId) socket.emit("typing", receiverId);
   },
 
   sendStopTyping: (receiverId) => {
     const { socket } = useAuthStore.getState();
-    if (socket) socket.emit("stopTyping", receiverId);
+    if (socket && receiverId) socket.emit("stopTyping", receiverId);
   },
 }));
