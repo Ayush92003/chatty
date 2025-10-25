@@ -79,15 +79,12 @@ export const useChatStore = create((set, get) => ({
     try {
       set({ isSending: true });
 
-      const res = await axiosInstance.post(
+      await axiosInstance.post(
         `/messages/send/${selectedUser._id}`,
         messageData
       );
 
-      // socket se update aayega
       set({ isSending: false });
-
-      // update user list (recent chat move up)
       get().getUsers?.();
     } catch (error) {
       console.error(error);
@@ -96,19 +93,44 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  // ------------------- MULTI-DELETE FIX -------------------
+  deleteSelectedMessages: async () => {
+    const { selectedMessages, selectedUser, messages, setSelectedMessages } =
+      get();
+    if (!Array.isArray(selectedMessages) || selectedMessages.length === 0)
+      return;
+
+    try {
+      await Promise.all(
+        selectedMessages.map((msgId) =>
+          axiosInstance.delete(`/messages/${msgId}/for-me`)
+        )
+      );
+
+      set({
+        messages: messages.filter((m) => !selectedMessages.includes(m._id)),
+        selectedMessages: [],
+        isSelectMode: false,
+      });
+
+      toast.success("Messages deleted successfully");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to delete messages");
+    }
+  },
+
   // ------------------- SOCKET LISTENERS -------------------
   subscribeToMessages: () => {
     const { socket, authUser } = useAuthStore.getState();
     if (!socket) return;
 
-    // Remove old listeners to avoid duplicates
     socket.off("newMessage");
     socket.off("messageDeletedForMe");
     socket.off("messageDeletedForEveryone");
     socket.off("userTyping");
     socket.off("userStopTyping");
 
-    // 🔹 New message
     socket.on("newMessage", (newMessage) => {
       const { selectedUser, messages } = get();
       if (
@@ -123,7 +145,6 @@ export const useChatStore = create((set, get) => ({
       get().getUsers();
     });
 
-    // 🔹 Delete for Me
     socket.on("messageDeletedForMe", (deletedMessageId) => {
       const { messages } = get();
       const safeMessages = Array.isArray(messages) ? messages : [];
@@ -132,7 +153,6 @@ export const useChatStore = create((set, get) => ({
       });
     });
 
-    // 🔹 Delete for Everyone
     socket.on("messageDeletedForEveryone", (deletedMessage) => {
       const { messages } = get();
       const safeMessages = Array.isArray(messages) ? messages : [];
@@ -149,7 +169,6 @@ export const useChatStore = create((set, get) => ({
       });
     });
 
-    // 🔹 Typing indicator
     socket.on("userTyping", ({ userId }) => {
       const { selectedUser } = get();
       if (selectedUser?._id === userId) set({ isTyping: true });

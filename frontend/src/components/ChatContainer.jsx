@@ -33,6 +33,7 @@ const ChatContainer = () => {
   const messageEndRef = useRef(null);
   const actionRef = useRef(null);
   const pressTimer = useRef(null);
+  const lastTapRef = useRef(0); // ✅ ref for double-tap timing
 
   const [showActionsFor, setShowActionsFor] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -41,7 +42,6 @@ const ChatContainer = () => {
     left: "50%",
     translateX: "-50%",
   });
-  const [lastTap, setLastTap] = useState(0); // for mobile double tap
 
   // ------------------- FETCH MESSAGES -------------------
   useEffect(() => {
@@ -139,7 +139,7 @@ const ChatContainer = () => {
   // ------------------- TOUCH + LONG PRESS + DOUBLE TAP -------------------
   const handleTouchStart = (msgId) => {
     const currentTime = new Date().getTime();
-    const tapLength = currentTime - lastTap;
+    const tapLength = currentTime - lastTapRef.current;
 
     // Double-tap → toggle selection
     if (tapLength < 300 && tapLength > 0) {
@@ -149,6 +149,7 @@ const ChatContainer = () => {
           ? prev.filter((id) => id !== msgId)
           : [...(prev || []), msgId]
       );
+      lastTapRef.current = 0; // reset after double-tap
     } else {
       // Long press → start select mode
       pressTimer.current = setTimeout(() => {
@@ -160,9 +161,9 @@ const ChatContainer = () => {
         );
         if (navigator.vibrate) navigator.vibrate(50); // haptic feedback
       }, 600);
-    }
 
-    setLastTap(currentTime);
+      lastTapRef.current = currentTime;
+    }
   };
 
   const handleTouchEnd = () => {
