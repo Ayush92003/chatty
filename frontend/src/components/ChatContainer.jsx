@@ -376,9 +376,9 @@ const ChatContainer = () => {
                   {isDeleted ? "This message was deleted" : messageText}
                 </p>
 
-                <span className="absolute text-[10px] text-gray-400 bottom-1 right-2">
+                <p className="text-[10px] text-gray-400 text-end">
                   {formatMessageTime(message.createdAt)}
-                </span>
+                </p>
               </div>
             </div>
           );
