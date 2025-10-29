@@ -20,5 +20,4 @@ router.delete("/clear/:userId/for-me", protectRoute, clearChatForMe);
 router.delete("/:id/for-me", protectRoute, deleteMessageForMe);
 router.delete("/:id/for-everyone", protectRoute, deleteMessageForEveryone);
 
-
 export default router;

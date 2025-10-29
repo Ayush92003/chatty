@@ -1,7 +1,7 @@
 /* eslint-disable no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
 import { useEffect, useRef, useState } from "react";
-import { FaTrash, FaCopy, FaEdit, FaTimes } from "react-icons/fa";
+import { FaTrash, FaCopy, FaEdit, FaTimes, FaReply } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { useChatStore } from "../store/useChatStore";
@@ -27,9 +27,12 @@ const ChatContainer = () => {
     isSelectMode,
     setIsSelectMode,
     deleteSelectedMessages,
+    replyTo,
+    setReplyTo,
   } = useChatStore();
 
   const { authUser } = useAuthStore();
+
   const messageEndRef = useRef(null);
   const actionRef = useRef(null);
   const pressTimer = useRef(null);
@@ -42,20 +45,25 @@ const ChatContainer = () => {
     left: "50%",
     translateX: "-50%",
   });
-  const [zoomedImage, setZoomedImage] = useState(null); // ✅ Zoomed image state
+  const [zoomedImage, setZoomedImage] = useState(null);
 
   // ------------------- FETCH MESSAGES -------------------
   useEffect(() => {
     if (!selectedUser?._id) return;
     getMessages(selectedUser._id);
     subscribeToMessages();
+
     return () => unsubscribeFromMessages();
   }, [selectedUser?._id]);
 
-  // ------------------- AUTO SCROLL -------------------
+  // ------------------- SCROLL DIRECTLY TO BOTTOM -------------------
   useEffect(() => {
-    if (messageEndRef.current && Array.isArray(messages)) {
-      messageEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (
+      messageEndRef.current &&
+      Array.isArray(messages) &&
+      messages.length > 0
+    ) {
+      messageEndRef.current.scrollIntoView({ behavior: "auto" });
     }
   }, [messages]);
 
@@ -137,12 +145,32 @@ const ChatContainer = () => {
     setShowActionsFor(null);
   };
 
+  // ------------------- REPLY FUNCTION (uses store) -------------------
+  const handleReply = (message) => {
+    // normalize message text
+    const msgText = message?.text ?? message?.message ?? "";
+    const senderName =
+      message?.senderDetails?.fullName ||
+      message?.senderName ||
+      (message?.senderId === authUser._id ? "You" : "User");
+
+    setReplyTo({
+      _id: message?._id,
+      text: msgText,
+      sender: {
+        fullName: senderName,
+        _id: message?.senderId ?? message?.sender,
+      },
+    });
+
+    setShowActionsFor(null);
+  };
+
   // ------------------- TOUCH + LONG PRESS + DOUBLE TAP -------------------
   const handleTouchStart = (msgId) => {
     const currentTime = new Date().getTime();
     const tapLength = currentTime - lastTapRef.current;
 
-    // Double-tap → toggle selection
     if (tapLength < 300 && tapLength > 0) {
       setIsSelectMode(true);
       setSelectedMessages((prev) =>
@@ -152,7 +180,6 @@ const ChatContainer = () => {
       );
       lastTapRef.current = 0;
     } else {
-      // Long press → start select mode
       pressTimer.current = setTimeout(() => {
         setIsSelectMode(true);
         setSelectedMessages((prev) =>
@@ -236,11 +263,22 @@ const ChatContainer = () => {
               className="flex items-center gap-2 px-3 py-2 rounded hover:bg-base-200 transition"
               onClick={() =>
                 handleCopyMessage(
-                  messages.find((m) => m._id === showActionsFor)?.text || ""
+                  messages.find((m) => m._id === showActionsFor)?.text ||
+                    messages.find((m) => m._id === showActionsFor)?.message ||
+                    ""
                 )
               }
             >
               <FaCopy /> Copy
+            </button>
+
+            <button
+              className="flex items-center gap-2 px-3 py-2 rounded hover:bg-base-200 transition"
+              onClick={() =>
+                handleReply(messages.find((m) => m._id === showActionsFor))
+              }
+            >
+              <FaReply /> Reply
             </button>
 
             {messages.find((m) => m._id === showActionsFor)?.senderId ===
@@ -270,11 +308,13 @@ const ChatContainer = () => {
           const isDeleted =
             message.isDeletedForEveryone || message.text === "deleted";
 
+          // message text compatibility
+          const messageText = message.text ?? message.message ?? "";
+
           return (
             <div
               key={message._id}
               className={`chat ${isSender ? "chat-end" : "chat-start"}`}
-              ref={messageEndRef}
             >
               <div className="chat-image avatar">
                 <div className="size-10 rounded-full border">
@@ -310,16 +350,10 @@ const ChatContainer = () => {
                     }
                   } else {
                     if (!isDeleted && message.image) {
-                      setZoomedImage(message.image); // ✅ Open zoom modal
+                      setZoomedImage(message.image);
                     } else if (!isDeleted) {
                       setShowActionsFor(message._id);
                     }
-                  }
-                }}
-                onDoubleClick={() => {
-                  if (!isSelectMode) {
-                    setIsSelectMode(true);
-                    setSelectedMessages([message._id]);
                   }
                 }}
               >
@@ -331,8 +365,15 @@ const ChatContainer = () => {
                   />
                 )}
 
+                {message.replyTo && (
+                  <div className="text-xs text-gray-500 border-l-2 border-primary pl-2 mb-1">
+                    Replying to:{" "}
+                    {message.replyTo.text ?? message.replyTo.message}
+                  </div>
+                )}
+
                 <p className="text-sm">
-                  {isDeleted ? "This message was deleted" : message.text}
+                  {isDeleted ? "This message was deleted" : messageText}
                 </p>
 
                 <span className="absolute text-[10px] text-gray-400 bottom-1 right-2">
@@ -369,6 +410,7 @@ const ChatContainer = () => {
         <div ref={messageEndRef} />
       </div>
 
+      {/* Message Input (reads replyTo from store internally) */}
       <MessageInput />
 
       {/* Zoomed Image Modal */}

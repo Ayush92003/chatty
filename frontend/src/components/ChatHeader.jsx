@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { FiMoreVertical } from "react-icons/fi";
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
@@ -11,7 +11,7 @@ const ChatHeader = () => {
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
 
-  // ✅ Handle click outside to close dropdown
+  // ✅ Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
@@ -22,6 +22,7 @@ const ChatHeader = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // ✅ Clear chat for current user only
   const clearChatForMe = async () => {
     try {
       await axiosInstance.delete(`/messages/clear/${selectedUser._id}/for-me`);
@@ -32,11 +33,22 @@ const ChatHeader = () => {
     }
   };
 
+  if (!selectedUser) return null;
+
   return (
     <div className="p-2.5 border-b border-base-300 relative bg-base-100">
       <div className="flex items-center justify-between">
-        {/* Left side: User Info */}
+        {/* Left: Back Button + User Info */}
         <div className="flex items-center gap-3">
+          {/* 🔙 Back Button */}
+          <button
+            onClick={() => setSelectedUser(null)}
+            className="p-2 rounded-full hover:bg-base-200 transition"
+          >
+            <ArrowLeft size={20} />
+          </button>
+
+          {/* 👤 Profile Picture */}
           <div className="avatar">
             <div className="size-10 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2">
               <img
@@ -46,6 +58,7 @@ const ChatHeader = () => {
             </div>
           </div>
 
+          {/* 🧑‍💬 Name + Status */}
           <div>
             <h3 className="font-semibold text-base-content">
               {selectedUser.fullName}
@@ -62,20 +75,13 @@ const ChatHeader = () => {
           </div>
         </div>
 
-        {/* Right side: 3-dot menu + close */}
+        {/* Right: 3-dot menu */}
         <div className="flex items-center gap-2 relative" ref={menuRef}>
           <button
             className="btn btn-ghost btn-sm hover:bg-base-200 rounded-full"
             onClick={() => setShowMenu(!showMenu)}
           >
             <FiMoreVertical size={20} />
-          </button>
-
-          <button
-            className="btn btn-ghost btn-sm hover:bg-base-200 rounded-full"
-            onClick={() => setSelectedUser(null)}
-          >
-            <X size={18} />
           </button>
 
           {/* Dropdown */}
@@ -87,7 +93,7 @@ const ChatHeader = () => {
                     onClick={clearChatForMe}
                     className="flex items-center gap-2 text-error font-medium hover:bg-error/10 rounded-lg px-3 py-2 transition-all"
                   >
-                    🗑️ Clear Chat
+                    Clear Chat
                   </button>
                 </li>
                 <li>

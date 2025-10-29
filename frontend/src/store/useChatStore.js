@@ -1,204 +1,238 @@
 /* eslint-disable no-unused-vars */
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
 
-export const useChatStore = create((set, get) => ({
-  messages: [],
-  users: [],
-  selectedUser: null,
-  selectedMessages: [], // ✅ initialized as empty array
-  isSelectMode: false,
-  isUsersLoading: false,
-  isMessagesLoading: false,
-  isSending: false,
-  isTyping: false,
+export const useChatStore = create(
+  persist(
+    (set, get) => ({
+      messages: [],
+      users: [],
+      selectedUser: null,
+      selectedMessages: [],
+      isSelectMode: false,
+      isUsersLoading: false,
+      isMessagesLoading: false,
+      isSending: false,
+      isTyping: false,
 
-  // ------------------- BASIC SETTERS -------------------
-  setMessages: (messages) => set({ messages }),
-  setUsers: (users) => set({ users }),
-  setSelectedUser: (selectedUser) => set({ selectedUser }),
-  setIsTyping: (typing) => set({ isTyping: typing }),
-  setSelectedMessages: (selectedMessages) =>
-    set({
-      selectedMessages: Array.isArray(selectedMessages) ? selectedMessages : [],
+      // 🆕 Reply feature state
+      replyTo: null,
+      setReplyTo: (msg) => set({ replyTo: msg }),
+      clearReply: () => set({ replyTo: null }),
+
+      // ------------------- BASIC SETTERS -------------------
+      setMessages: (messages) => set({ messages }),
+      setUsers: (users) => set({ users }),
+      setSelectedUser: (selectedUser) => set({ selectedUser }),
+      setIsTyping: (typing) => set({ isTyping: typing }),
+      setSelectedMessages: (selectedMessages) =>
+        set({
+          selectedMessages: Array.isArray(selectedMessages)
+            ? selectedMessages
+            : [],
+        }),
+      setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
+
+      // ------------------- USERS -------------------
+      getUsers: async () => {
+        set({ isUsersLoading: true });
+        try {
+          const authUser = useAuthStore.getState().authUser;
+          if (!authUser) return;
+
+          const contactsRes = await axiosInstance.get("/contacts");
+          const savedContacts = contactsRes.data.map((user) => ({
+            ...user,
+            isSaved: true,
+          }));
+
+          const recentRes = await axiosInstance.get("/messages/users");
+          const recentChats =
+            recentRes.data
+              ?.filter((u) => !savedContacts.find((c) => c._id === u._id))
+              ?.map((user) => ({ ...user, isSaved: false })) || [];
+
+          const mergedUsers = [...savedContacts, ...recentChats].filter(
+            (user) => user._id !== authUser._id
+          );
+
+          set({ users: mergedUsers });
+        } catch (error) {
+          console.error(error);
+          toast.error(error.response?.data?.message || "Failed to fetch users");
+        } finally {
+          set({ isUsersLoading: false });
+        }
+      },
+
+      // ------------------- MESSAGES -------------------
+      getMessages: async (userId) => {
+        set({ isMessagesLoading: true });
+        try {
+          const res = await axiosInstance.get(`/messages/${userId}`);
+          set({ messages: Array.isArray(res.data) ? res.data : [] });
+        } catch (error) {
+          toast.error(
+            error.response?.data?.message || "Failed to fetch messages"
+          );
+        } finally {
+          set({ isMessagesLoading: false });
+        }
+      },
+
+      // ------------------- SEND MESSAGE -------------------
+      sendMessage: async (messageData) => {
+        const { selectedUser, replyTo, setReplyTo } = get();
+        if (!selectedUser?._id) return;
+
+        try {
+          set({ isSending: true });
+          const payload = {
+            ...messageData,
+            replyTo: replyTo ? replyTo._id : null,
+          };
+
+          // ✅ Send message to backend
+          await axiosInstance.post(
+            `/messages/send/${selectedUser._id}`,
+            payload
+          );
+
+          // ✅ Clear reply state after sending
+          setReplyTo(null);
+
+          set({ isSending: false });
+          get().getUsers?.();
+        } catch (error) {
+          console.error(error);
+          set({ isSending: false });
+          toast.error(
+            error.response?.data?.message || "Failed to send message"
+          );
+        }
+      },
+
+      // ------------------- MULTI-DELETE -------------------
+      deleteSelectedMessages: async () => {
+        const {
+          selectedMessages,
+          selectedUser,
+          messages,
+          setSelectedMessages,
+        } = get();
+        if (!Array.isArray(selectedMessages) || selectedMessages.length === 0)
+          return;
+
+        try {
+          await Promise.all(
+            selectedMessages.map((msgId) =>
+              axiosInstance.delete(`/messages/${msgId}/for-me`)
+            )
+          );
+
+          set({
+            messages: messages.filter((m) => !selectedMessages.includes(m._id)),
+            selectedMessages: [],
+            isSelectMode: false,
+          });
+
+          toast.success("Messages deleted successfully");
+        } catch (err) {
+          console.error(err);
+          toast.error("Failed to delete messages");
+        }
+      },
+
+      // ------------------- SOCKET LISTENERS -------------------
+      subscribeToMessages: () => {
+        const { socket, authUser } = useAuthStore.getState();
+        if (!socket) return;
+
+        socket.off("newMessage");
+        socket.off("messageDeletedForMe");
+        socket.off("messageDeletedForEveryone");
+        socket.off("userTyping");
+        socket.off("userStopTyping");
+
+        socket.on("newMessage", (newMessage) => {
+          const { selectedUser, messages } = get();
+          if (
+            selectedUser &&
+            (newMessage.senderId === selectedUser._id ||
+              newMessage.receiverId === selectedUser._id)
+          ) {
+            const safeMessages = Array.isArray(messages) ? messages : [];
+            const exists = safeMessages.some((m) => m._id === newMessage._id);
+            if (!exists) set({ messages: [...safeMessages, newMessage] });
+          }
+          get().getUsers();
+        });
+
+        socket.on("messageDeletedForMe", (deletedMessageId) => {
+          const { messages } = get();
+          const safeMessages = Array.isArray(messages) ? messages : [];
+          set({
+            messages: safeMessages.filter((m) => m._id !== deletedMessageId),
+          });
+        });
+
+        socket.on("messageDeletedForEveryone", (deletedMessage) => {
+          const { messages } = get();
+          const safeMessages = Array.isArray(messages) ? messages : [];
+          set({
+            messages: safeMessages.map((m) =>
+              m._id === deletedMessage._id
+                ? {
+                    ...m,
+                    text: "This message was deleted",
+                    isDeletedForEveryone: true,
+                  }
+                : m
+            ),
+          });
+        });
+
+        socket.on("userTyping", ({ userId }) => {
+          const { selectedUser } = get();
+          if (selectedUser?._id === userId) set({ isTyping: true });
+        });
+
+        socket.on("userStopTyping", ({ userId }) => {
+          const { selectedUser } = get();
+          if (selectedUser?._id === userId) set({ isTyping: false });
+        });
+      },
+
+      unsubscribeFromMessages: () => {
+        const { socket } = useAuthStore.getState();
+        if (!socket) return;
+
+        socket.off("newMessage");
+        socket.off("messageDeletedForMe");
+        socket.off("messageDeletedForEveryone");
+        socket.off("userTyping");
+        socket.off("userStopTyping");
+      },
+
+      // ------------------- TYPING EVENTS -------------------
+      sendTyping: (receiverId) => {
+        const { socket } = useAuthStore.getState();
+        if (socket && receiverId) socket.emit("typing", receiverId);
+      },
+
+      sendStopTyping: (receiverId) => {
+        const { socket } = useAuthStore.getState();
+        if (socket && receiverId) socket.emit("stopTyping", receiverId);
+      },
     }),
-  setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
-
-  // ------------------- USERS -------------------
-  getUsers: async () => {
-    set({ isUsersLoading: true });
-    try {
-      const authUser = useAuthStore.getState().authUser;
-      if (!authUser) return;
-
-      const contactsRes = await axiosInstance.get("/contacts");
-      const savedContacts = contactsRes.data.map((user) => ({
-        ...user,
-        isSaved: true,
-      }));
-
-      const recentRes = await axiosInstance.get("/messages/users");
-      const recentChats =
-        recentRes.data
-          ?.filter((u) => !savedContacts.find((c) => c._id === u._id))
-          ?.map((user) => ({ ...user, isSaved: false })) || [];
-
-      const mergedUsers = [...savedContacts, ...recentChats].filter(
-        (user) => user._id !== authUser._id
-      );
-
-      set({ users: mergedUsers });
-    } catch (error) {
-      console.error(error);
-      toast.error(error.response?.data?.message || "Failed to fetch users");
-    } finally {
-      set({ isUsersLoading: false });
+    {
+      name: "chat-storage",
+      partialize: (state) => ({
+        selectedUser: state.selectedUser,
+      }),
     }
-  },
-
-  // ------------------- MESSAGES -------------------
-  getMessages: async (userId) => {
-    set({ isMessagesLoading: true });
-    try {
-      const res = await axiosInstance.get(`/messages/${userId}`);
-      set({ messages: Array.isArray(res.data) ? res.data : [] });
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Failed to fetch messages");
-    } finally {
-      set({ isMessagesLoading: false });
-    }
-  },
-
-  // ------------------- SEND MESSAGE -------------------
-  sendMessage: async (messageData) => {
-    const { selectedUser } = get();
-    if (!selectedUser?._id) return;
-
-    try {
-      set({ isSending: true });
-
-      await axiosInstance.post(
-        `/messages/send/${selectedUser._id}`,
-        messageData
-      );
-
-      set({ isSending: false });
-      get().getUsers?.();
-    } catch (error) {
-      console.error(error);
-      set({ isSending: false });
-      toast.error(error.response?.data?.message || "Failed to send message");
-    }
-  },
-
-  // ------------------- MULTI-DELETE FIX -------------------
-  deleteSelectedMessages: async () => {
-    const { selectedMessages, selectedUser, messages, setSelectedMessages } =
-      get();
-    if (!Array.isArray(selectedMessages) || selectedMessages.length === 0)
-      return;
-
-    try {
-      await Promise.all(
-        selectedMessages.map((msgId) =>
-          axiosInstance.delete(`/messages/${msgId}/for-me`)
-        )
-      );
-
-      set({
-        messages: messages.filter((m) => !selectedMessages.includes(m._id)),
-        selectedMessages: [],
-        isSelectMode: false,
-      });
-
-      toast.success("Messages deleted successfully");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete messages");
-    }
-  },
-
-  // ------------------- SOCKET LISTENERS -------------------
-  subscribeToMessages: () => {
-    const { socket, authUser } = useAuthStore.getState();
-    if (!socket) return;
-
-    socket.off("newMessage");
-    socket.off("messageDeletedForMe");
-    socket.off("messageDeletedForEveryone");
-    socket.off("userTyping");
-    socket.off("userStopTyping");
-
-    socket.on("newMessage", (newMessage) => {
-      const { selectedUser, messages } = get();
-      if (
-        selectedUser &&
-        (newMessage.senderId === selectedUser._id ||
-          newMessage.receiverId === selectedUser._id)
-      ) {
-        const safeMessages = Array.isArray(messages) ? messages : [];
-        const exists = safeMessages.some((m) => m._id === newMessage._id);
-        if (!exists) set({ messages: [...safeMessages, newMessage] });
-      }
-      get().getUsers();
-    });
-
-    socket.on("messageDeletedForMe", (deletedMessageId) => {
-      const { messages } = get();
-      const safeMessages = Array.isArray(messages) ? messages : [];
-      set({
-        messages: safeMessages.filter((m) => m._id !== deletedMessageId),
-      });
-    });
-
-    socket.on("messageDeletedForEveryone", (deletedMessage) => {
-      const { messages } = get();
-      const safeMessages = Array.isArray(messages) ? messages : [];
-      set({
-        messages: safeMessages.map((m) =>
-          m._id === deletedMessage._id
-            ? {
-                ...m,
-                text: "This message was deleted",
-                isDeletedForEveryone: true,
-              }
-            : m
-        ),
-      });
-    });
-
-    socket.on("userTyping", ({ userId }) => {
-      const { selectedUser } = get();
-      if (selectedUser?._id === userId) set({ isTyping: true });
-    });
-
-    socket.on("userStopTyping", ({ userId }) => {
-      const { selectedUser } = get();
-      if (selectedUser?._id === userId) set({ isTyping: false });
-    });
-  },
-
-  unsubscribeFromMessages: () => {
-    const { socket } = useAuthStore.getState();
-    if (!socket) return;
-
-    socket.off("newMessage");
-    socket.off("messageDeletedForMe");
-    socket.off("messageDeletedForEveryone");
-    socket.off("userTyping");
-    socket.off("userStopTyping");
-  },
-
-  // ------------------- TYPING EVENTS -------------------
-  sendTyping: (receiverId) => {
-    const { socket } = useAuthStore.getState();
-    if (socket && receiverId) socket.emit("typing", receiverId);
-  },
-
-  sendStopTyping: (receiverId) => {
-    const { socket } = useAuthStore.getState();
-    if (socket && receiverId) socket.emit("stopTyping", receiverId);
-  },
-}));
+  )
+);

@@ -26,7 +26,7 @@ export const getUsersForSidebar = async (req, res) => {
   }
 };
 
-// ✅ Get messages between two users
+// ✅ Get messages between two users (with reply info)
 export const getMessages = async (req, res) => {
   try {
     const { id: userToChatId } = req.params;
@@ -38,7 +38,12 @@ export const getMessages = async (req, res) => {
         { senderId: userToChatId, receiverId: myId },
       ],
       deletedFor: { $ne: myId },
-    }).sort({ createdAt: 1 });
+    })
+      .populate({
+        path: "replyTo",
+        select: "text image senderId receiverId",
+      })
+      .sort({ createdAt: 1 });
 
     res.status(200).json(messages);
   } catch (error) {
@@ -47,10 +52,10 @@ export const getMessages = async (req, res) => {
   }
 };
 
-// ✅ Send message
+// ✅ Send message (with optional image + replyTo)
 export const sendMessage = async (req, res) => {
   try {
-    const { text, image } = req.body;
+    const { text, image, replyTo } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
 
@@ -72,9 +77,10 @@ export const sendMessage = async (req, res) => {
       receiverId,
       text,
       image: imageUrl,
+      replyTo: replyTo || null,
     });
 
-    // Update recentChats
+    // Update recent chats for both
     await User.findByIdAndUpdate(senderId, {
       $addToSet: { recentChats: receiverId },
     });
@@ -82,15 +88,22 @@ export const sendMessage = async (req, res) => {
       $addToSet: { recentChats: senderId },
     });
 
-    // ✅ Emit to both sender & receiver sockets
+    // Populate replyTo for socket emit
+    const populatedMessage = await Message.findById(newMessage._id).populate({
+      path: "replyTo",
+      select: "text image senderId receiverId",
+    });
+
+    // Emit message to both sender and receiver
     const receiverSocketId = getReceiverSocketId(receiverId);
     const senderSocketId = getReceiverSocketId(senderId);
 
     if (receiverSocketId)
-      io.to(receiverSocketId).emit("newMessage", newMessage);
-    if (senderSocketId) io.to(senderSocketId).emit("newMessage", newMessage);
+      io.to(receiverSocketId).emit("newMessage", populatedMessage);
+    if (senderSocketId)
+      io.to(senderSocketId).emit("newMessage", populatedMessage);
 
-    res.status(201).json(newMessage);
+    res.status(201).json(populatedMessage);
   } catch (error) {
     console.error("SendMessage failed:", error.message);
     res.status(500).json({ error: "Internal server error" });
@@ -142,10 +155,7 @@ export const deleteMessageForEveryone = async (req, res) => {
     message.isDeletedForEveryone = true;
     await message.save();
 
-    const senderSocketId = getReceiverSocketId(message.senderId);
-    const receiverSocketId = getReceiverSocketId(message.receiverId);
-
-    // ✅ Emit event to both sender & receiver
+    // Emit event to both users
     io.emit("messageDeletedForEveryone", message);
 
     res.json({
@@ -158,24 +168,31 @@ export const deleteMessageForEveryone = async (req, res) => {
   }
 };
 
-
-// DELETE /messages/clear/:userId/for-me
+// ✅ Clear chat for me
 export const clearChatForMe = async (req, res) => {
   try {
-    const userId = req.user._id; // logged-in user
+    const userId = req.user._id;
     const chatWithId = req.params.userId;
 
-    // Delete all messages where logged-in user is sender or receiver with chatWithId
-    await Message.deleteMany({
+    const messages = await Message.find({
       $or: [
         { senderId: userId, receiverId: chatWithId },
         { senderId: chatWithId, receiverId: userId },
       ],
     });
 
-    res.status(200).json({ message: "Chat cleared successfully" });
+    await Promise.all(
+      messages.map(async (msg) => {
+        if (!msg.deletedFor.includes(userId)) {
+          msg.deletedFor.push(userId);
+          await msg.save();
+        }
+      })
+    );
+
+    res.status(200).json({ message: "Chat cleared for you only" });
   } catch (error) {
-    console.error("Error clearing chat:", error);
+    console.error("Error clearing chat:", error.message);
     res.status(500).json({ message: "Failed to clear chat" });
   }
 };
