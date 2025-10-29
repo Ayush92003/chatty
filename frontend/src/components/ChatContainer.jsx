@@ -172,6 +172,7 @@ const ChatContainer = () => {
     const tapLength = currentTime - lastTapRef.current;
 
     if (tapLength < 300 && tapLength > 0) {
+      // double-tap: toggle selection for message
       setIsSelectMode(true);
       setSelectedMessages((prev) =>
         Array.isArray(prev) && prev.includes(msgId)
@@ -180,6 +181,7 @@ const ChatContainer = () => {
       );
       lastTapRef.current = 0;
     } else {
+      // long press to start select mode
       pressTimer.current = setTimeout(() => {
         setIsSelectMode(true);
         setSelectedMessages((prev) =>
@@ -354,6 +356,13 @@ const ChatContainer = () => {
                     } else if (!isDeleted) {
                       setShowActionsFor(message._id);
                     }
+                  }
+                }}
+                onDoubleClick={() => {
+                  // <-- restored double-click selection behavior from old code
+                  if (!isSelectMode) {
+                    setIsSelectMode(true);
+                    setSelectedMessages([message._id]);
                   }
                 }}
               >
