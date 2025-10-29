@@ -370,7 +370,46 @@ const ChatContainer = () => {
                   <img
                     src={message.image}
                     alt="Attachment"
-                    className="sm:max-w-[200px] rounded-md mb-2"
+                    className="sm:max-w-[200px] rounded-md mb-2 cursor-pointer transition-transform duration-200 hover:scale-[1.02]"
+                    onClick={(e) => {
+                      // 🧠 If in select mode → select/unselect instead of zoom
+                      if (isSelectMode) {
+                        e.stopPropagation();
+                        if (selectedMessages.includes(message._id)) {
+                          setSelectedMessages(
+                            selectedMessages.filter((id) => id !== message._id)
+                          );
+                        } else {
+                          setSelectedMessages([
+                            ...selectedMessages,
+                            message._id,
+                          ]);
+                        }
+                        return;
+                      }
+
+                      // 🧠 If not deleted → show actions instead of zoom (for reply/copy/edit)
+                      if (!isDeleted) {
+                        setShowActionsFor(message._id);
+                      }
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      // 🧠 Only open zoom on double click if not in select mode
+                      if (!isSelectMode && !isDeleted) {
+                        setZoomedImage(message.image);
+                      }
+                    }}
+                    onTouchStart={(e) => {
+                      pressTimer.current = setTimeout(() => {
+                        if (!isSelectMode) {
+                          setZoomedImage(message.image);
+                        }
+                      }, 700); // long press opens zoom
+                    }}
+                    onTouchEnd={() => {
+                      if (pressTimer.current) clearTimeout(pressTimer.current);
+                    }}
                   />
                 )}
 
