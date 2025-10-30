@@ -36,7 +36,7 @@ export const useChatStore = create(
         }),
       setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
 
-      // Users
+      // ------------------- USERS -------------------
       getUsers: async () => {
         set({ isUsersLoading: true });
         try {
@@ -68,7 +68,7 @@ export const useChatStore = create(
         }
       },
 
-      // Messages
+      // ------------------- MESSAGES -------------------
       getMessages: async (userId) => {
         set({ isMessagesLoading: true });
         try {
@@ -83,7 +83,7 @@ export const useChatStore = create(
         }
       },
 
-      // Send message
+      // ------------------- SEND MESSAGE -------------------
       sendMessage: async (messageData) => {
         const { selectedUser, replyTo, setReplyTo } = get();
         if (!selectedUser?._id) return;
@@ -100,13 +100,14 @@ export const useChatStore = create(
             payload
           );
 
-          // Clear reply state after sending
+          // ✅ clear reply
           setReplyTo(null);
-
           set({ isSending: false });
-          get().getUsers?.();
 
-          // Optionally, append just-sent message (if backend returns populated)
+          // ❌ Removed getUsers() (was refreshing sidebar)
+          // get().getUsers?.();
+
+          // ✅ Just append new message locally
           if (res?.data) {
             set((state) => ({
               messages: [...(state.messages || []), res.data],
@@ -121,7 +122,7 @@ export const useChatStore = create(
         }
       },
 
-      // Multi-delete
+      // ------------------- MULTI DELETE -------------------
       deleteSelectedMessages: async () => {
         const {
           selectedMessages,
@@ -165,11 +166,10 @@ export const useChatStore = create(
         socket.off("messageStatusUpdated");
         socket.off("messagesSeen");
 
-        // New message arrived
+        // ✅ New message arrived
         socket.on("newMessage", (newMessage) => {
           const { selectedUser, messages } = get();
 
-          // append if belongs to active chat
           if (
             selectedUser &&
             (newMessage.senderId === selectedUser._id ||
@@ -185,7 +185,7 @@ export const useChatStore = create(
             }
           }
 
-          get().getUsers();
+          // ❌ Removed getUsers() (no need to refresh sidebar on each msg)
         });
 
         // message deleted for me
@@ -246,6 +246,7 @@ export const useChatStore = create(
         });
       },
 
+      // ------------------- UNSUBSCRIBE -------------------
       unsubscribeFromMessages: () => {
         const { socket } = useAuthStore.getState();
         if (!socket) return;
@@ -259,7 +260,7 @@ export const useChatStore = create(
         socket.off("messagesSeen");
       },
 
-      // typing events
+      // ------------------- TYPING EVENTS -------------------
       sendTyping: (receiverId) => {
         const { socket } = useAuthStore.getState();
         if (socket && receiverId) socket.emit("typing", { to: receiverId });
