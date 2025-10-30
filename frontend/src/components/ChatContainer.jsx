@@ -66,7 +66,7 @@ const ChatContainer = () => {
     return null;
   };
 
-  // helper: mark unseen messages in active chat as seen (calls API per message)
+  // ✅ Fix: Mark unseen messages as seen (API call)
   const markUnseenMessagesAsSeen = async () => {
     try {
       if (!Array.isArray(messages) || !authUser) return;
@@ -87,6 +87,7 @@ const ChatContainer = () => {
     }
   };
 
+  // ✅ Get messages + subscribe once per selected user
   useEffect(() => {
     if (!selectedUser?._id) return;
     getMessages(selectedUser._id);
@@ -95,13 +96,26 @@ const ChatContainer = () => {
     return () => unsubscribeFromMessages();
   }, [selectedUser?._id]);
 
+  // ✅ Mark as seen when messages load
   useEffect(() => {
     if (!selectedUser?._id || !authUser?._id) return;
     markUnseenMessagesAsSeen();
   }, [messages, selectedUser, authUser]);
 
+  // ✅ Socket listeners (with cleanup + duplicate prevention)
   useEffect(() => {
     if (!socket) return;
+
+    const handleMessage = (newMsg) => {
+      useChatStore.setState((state) => {
+        // prevent duplicate message
+        if (state.messages.some((m) => m._id === newMsg._id)) return state;
+        return { messages: [...state.messages, newMsg] };
+      });
+    };
+
+    socket.off("newMessage");
+    socket.on("newMessage", handleMessage);
 
     socket.off("messageStatusUpdated");
     socket.on("messageStatusUpdated", ({ messageId, status }) => {
@@ -123,11 +137,13 @@ const ChatContainer = () => {
     });
 
     return () => {
+      socket.off("newMessage", handleMessage);
       socket.off("messageStatusUpdated");
       socket.off("messagesSeen");
     };
   }, [socket]);
 
+  // ✅ Auto scroll to bottom on new messages
   useEffect(() => {
     if (
       messageEndRef.current &&
@@ -138,6 +154,7 @@ const ChatContainer = () => {
     }
   }, [messages]);
 
+  // ✅ Hide action modal on outside click
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (actionRef.current && !actionRef.current.contains(e.target)) {
@@ -152,6 +169,7 @@ const ChatContainer = () => {
     };
   }, []);
 
+  // ✅ Responsive modal position
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth < 580) {
@@ -165,6 +183,7 @@ const ChatContainer = () => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // ✅ Auto exit select mode when nothing selected
   useEffect(() => {
     if (
       Array.isArray(selectedMessages) &&
@@ -175,6 +194,7 @@ const ChatContainer = () => {
     }
   }, [selectedMessages, isSelectMode]);
 
+  // ✅ Delete handlers
   const handleDeleteForMe = async (msgId) => {
     try {
       await axiosInstance.delete(`/messages/${msgId}/for-me`);
@@ -197,6 +217,7 @@ const ChatContainer = () => {
     }
   };
 
+  // ✅ Other UI handlers
   const handleCopyMessage = (text) => {
     navigator.clipboard.writeText(text);
     setShowActionsFor(null);
@@ -261,6 +282,7 @@ const ChatContainer = () => {
     if (pressTimer.current) clearTimeout(pressTimer.current);
   };
 
+  // ✅ Loader state
   if (isMessagesLoading) {
     return (
       <div className="flex-1 flex flex-col overflow-auto">
@@ -271,10 +293,12 @@ const ChatContainer = () => {
     );
   }
 
+  // ✅ UI
   return (
     <div className="flex-1 flex flex-col overflow-auto relative">
       <ChatHeader />
 
+      {/* Select Mode Bar */}
       {isSelectMode &&
         Array.isArray(selectedMessages) &&
         selectedMessages.length > 0 && (
@@ -302,6 +326,7 @@ const ChatContainer = () => {
           </div>
         )}
 
+      {/* Action Modal */}
       <AnimatePresence>
         {showActionsFor && !isSelectMode && (
           <motion.div
@@ -360,6 +385,7 @@ const ChatContainer = () => {
         )}
       </AnimatePresence>
 
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {(Array.isArray(messages) ? messages : []).map((message) => {
           const isSender = message.senderId === authUser._id;
@@ -474,7 +500,7 @@ const ChatContainer = () => {
                   {isDeleted ? "This message was deleted" : messageText}
                 </p>
 
-                {/* ✅ Status Icons Integrated Here */}
+                {/* ✅ Status Icons */}
                 <div className="text-[10px] text-gray-400 text-end flex items-center justify-end gap-1">
                   <span>{formatMessageTime(message.createdAt)}</span>
                   {isSender && renderStatusIcon(message.status)}
@@ -511,7 +537,8 @@ const ChatContainer = () => {
       </div>
 
       <MessageInput />
-
+      
+      {/* ✅ Zoomed Image Modal */}
       <AnimatePresence>
         {zoomedImage && (
           <motion.div
