@@ -3,7 +3,7 @@ import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 
-// ✅ Get sidebar users
+// -------------------- Get sidebar users --------------------
 export const getUsersForSidebar = async (req, res) => {
   try {
     const loggedInUserId = req.user._id;
@@ -26,7 +26,7 @@ export const getUsersForSidebar = async (req, res) => {
   }
 };
 
-// ✅ Get messages between two users (with reply info)
+// -------------------- Get messages between two users --------------------
 export const getMessages = async (req, res) => {
   try {
     const { id: userToChatId } = req.params;
@@ -52,7 +52,7 @@ export const getMessages = async (req, res) => {
   }
 };
 
-// ✅ Send message (with optional image + replyTo)
+// -------------------- Send message (with optional image + replyTo) --------------------
 export const sendMessage = async (req, res) => {
   try {
     const { text, image, replyTo } = req.body;
@@ -78,6 +78,7 @@ export const sendMessage = async (req, res) => {
       text,
       image: imageUrl,
       replyTo: replyTo || null,
+      status: "sent",
     });
 
     // Update recent chats for both
@@ -94,15 +95,44 @@ export const sendMessage = async (req, res) => {
       select: "text image senderId receiverId",
     });
 
-    // Emit message to both sender and receiver
+    // Emit message to receiver and sender
     const receiverSocketId = getReceiverSocketId(receiverId);
     const senderSocketId = getReceiverSocketId(senderId);
 
-    if (receiverSocketId)
-      io.to(receiverSocketId).emit("newMessage", populatedMessage);
-    if (senderSocketId)
-      io.to(senderSocketId).emit("newMessage", populatedMessage);
+    // If receiver is online, we can mark delivered immediately
+    if (receiverSocketId) {
+      // update DB to delivered
+      try {
+        await Message.findByIdAndUpdate(newMessage._id, {
+          status: "delivered",
+        });
+        // notify sender & receiver
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageStatusUpdated", {
+            messageId: newMessage._id,
+            status: "delivered",
+          });
+        }
+        io.to(receiverSocketId).emit("newMessage", populatedMessage);
+        io.to(receiverSocketId).emit("messageStatusUpdated", {
+          messageId: newMessage._id,
+          status: "delivered",
+        });
+      } catch (err) {
+        console.error("Failed to set delivered after send:", err.message);
+        // fallback emit newMessage anyway
+        if (receiverSocketId)
+          io.to(receiverSocketId).emit("newMessage", populatedMessage);
+        if (senderSocketId)
+          io.to(senderSocketId).emit("newMessage", populatedMessage);
+      }
+    } else {
+      // receiver offline → just emit newMessage to sender (so sender gets copy)
+      if (senderSocketId)
+        io.to(senderSocketId).emit("newMessage", populatedMessage);
+    }
 
+    // also respond to HTTP client
     res.status(201).json(populatedMessage);
   } catch (error) {
     console.error("SendMessage failed:", error.message);
@@ -110,7 +140,7 @@ export const sendMessage = async (req, res) => {
   }
 };
 
-// ✅ Delete message for me
+// -------------------- Delete message for me --------------------
 export const deleteMessageForMe = async (req, res) => {
   try {
     const { id } = req.params;
@@ -138,7 +168,7 @@ export const deleteMessageForMe = async (req, res) => {
   }
 };
 
-// ✅ Delete message for everyone
+// -------------------- Delete message for everyone --------------------
 export const deleteMessageForEveryone = async (req, res) => {
   try {
     const { id } = req.params;
@@ -168,7 +198,7 @@ export const deleteMessageForEveryone = async (req, res) => {
   }
 };
 
-// ✅ Clear chat for me
+// -------------------- Clear chat for me --------------------
 export const clearChatForMe = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -194,5 +224,55 @@ export const clearChatForMe = async (req, res) => {
   } catch (error) {
     console.error("Error clearing chat:", error.message);
     res.status(500).json({ message: "Failed to clear chat" });
+  }
+};
+
+// -------------------- Mark single message as seen (HTTP route) --------------------
+export const markMessageSeen = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user._id;
+
+    const message = await Message.findById(messageId);
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    // Only receiver should mark as seen
+    if (message.receiverId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "Not authorized to mark seen" });
+    }
+
+    if (!message.seenBy.includes(userId)) {
+      message.seenBy.push(userId);
+    }
+    message.status = "seen";
+    await message.save();
+
+    // Notify sender (if online)
+    const senderSocketId = getReceiverSocketId(message.senderId?.toString());
+    if (senderSocketId) {
+      io.to(senderSocketId).emit("messageStatusUpdated", {
+        messageId: message._id,
+        status: "seen",
+      });
+      io.to(senderSocketId).emit("messagesSeen", {
+        senderId: message.senderId?.toString(),
+        receiverId: userId.toString(),
+        messageId: message._id,
+      });
+    }
+
+    // Also inform receiver to keep UI in sync
+    const receiverSocketId = getReceiverSocketId(userId.toString());
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("messageStatusUpdated", {
+        messageId: message._id,
+        status: "seen",
+      });
+    }
+
+    res.status(200).json({ success: true, message: "Marked as seen" });
+  } catch (error) {
+    console.error("Error marking message as seen:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };

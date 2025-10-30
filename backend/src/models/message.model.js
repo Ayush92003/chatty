@@ -20,6 +20,21 @@ const messageSchema = new mongoose.Schema(
     text: { type: String },
     image: { type: String },
 
+    // status: sent, delivered, seen
+    status: {
+      type: String,
+      enum: ["sent", "delivered", "seen"],
+      default: "sent",
+    },
+
+    // track who has seen (helps for group logic in future)
+    seenBy: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+
     deletedFor: [
       {
         type: mongoose.Schema.Types.ObjectId,

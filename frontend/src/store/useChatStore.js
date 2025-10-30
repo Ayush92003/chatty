@@ -18,12 +18,12 @@ export const useChatStore = create(
       isSending: false,
       isTyping: false,
 
-      // 🆕 Reply feature state
+      // Reply state
       replyTo: null,
       setReplyTo: (msg) => set({ replyTo: msg }),
       clearReply: () => set({ replyTo: null }),
 
-      // ------------------- BASIC SETTERS -------------------
+      // Basic setters
       setMessages: (messages) => set({ messages }),
       setUsers: (users) => set({ users }),
       setSelectedUser: (selectedUser) => set({ selectedUser }),
@@ -36,7 +36,7 @@ export const useChatStore = create(
         }),
       setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
 
-      // ------------------- USERS -------------------
+      // Users
       getUsers: async () => {
         set({ isUsersLoading: true });
         try {
@@ -68,7 +68,7 @@ export const useChatStore = create(
         }
       },
 
-      // ------------------- MESSAGES -------------------
+      // Messages
       getMessages: async (userId) => {
         set({ isMessagesLoading: true });
         try {
@@ -83,7 +83,7 @@ export const useChatStore = create(
         }
       },
 
-      // ------------------- SEND MESSAGE -------------------
+      // Send message
       sendMessage: async (messageData) => {
         const { selectedUser, replyTo, setReplyTo } = get();
         if (!selectedUser?._id) return;
@@ -95,17 +95,23 @@ export const useChatStore = create(
             replyTo: replyTo ? replyTo._id : null,
           };
 
-          // ✅ Send message to backend
-          await axiosInstance.post(
+          const res = await axiosInstance.post(
             `/messages/send/${selectedUser._id}`,
             payload
           );
 
-          // ✅ Clear reply state after sending
+          // Clear reply state after sending
           setReplyTo(null);
 
           set({ isSending: false });
           get().getUsers?.();
+
+          // Optionally, append just-sent message (if backend returns populated)
+          if (res?.data) {
+            set((state) => ({
+              messages: [...(state.messages || []), res.data],
+            }));
+          }
         } catch (error) {
           console.error(error);
           set({ isSending: false });
@@ -115,7 +121,7 @@ export const useChatStore = create(
         }
       },
 
-      // ------------------- MULTI-DELETE -------------------
+      // Multi-delete
       deleteSelectedMessages: async () => {
         const {
           selectedMessages,
@@ -156,9 +162,14 @@ export const useChatStore = create(
         socket.off("messageDeletedForEveryone");
         socket.off("userTyping");
         socket.off("userStopTyping");
+        socket.off("messageStatusUpdated");
+        socket.off("messagesSeen");
 
+        // New message arrived
         socket.on("newMessage", (newMessage) => {
           const { selectedUser, messages } = get();
+
+          // append if belongs to active chat
           if (
             selectedUser &&
             (newMessage.senderId === selectedUser._id ||
@@ -167,10 +178,17 @@ export const useChatStore = create(
             const safeMessages = Array.isArray(messages) ? messages : [];
             const exists = safeMessages.some((m) => m._id === newMessage._id);
             if (!exists) set({ messages: [...safeMessages, newMessage] });
+
+            // If current client is receiver, notify server that message is delivered
+            if (authUser && newMessage.receiverId === authUser._id) {
+              socket.emit("messageDelivered", { messageId: newMessage._id });
+            }
           }
+
           get().getUsers();
         });
 
+        // message deleted for me
         socket.on("messageDeletedForMe", (deletedMessageId) => {
           const { messages } = get();
           const safeMessages = Array.isArray(messages) ? messages : [];
@@ -179,6 +197,7 @@ export const useChatStore = create(
           });
         });
 
+        // message deleted for everyone
         socket.on("messageDeletedForEveryone", (deletedMessage) => {
           const { messages } = get();
           const safeMessages = Array.isArray(messages) ? messages : [];
@@ -195,6 +214,7 @@ export const useChatStore = create(
           });
         });
 
+        // typing indicators
         socket.on("userTyping", ({ userId }) => {
           const { selectedUser } = get();
           if (selectedUser?._id === userId) set({ isTyping: true });
@@ -203,6 +223,26 @@ export const useChatStore = create(
         socket.on("userStopTyping", ({ userId }) => {
           const { selectedUser } = get();
           if (selectedUser?._id === userId) set({ isTyping: false });
+        });
+
+        // message status updated (delivered/seen)
+        socket.on("messageStatusUpdated", ({ messageId, status }) => {
+          set((state) => ({
+            messages: state.messages.map((msg) =>
+              msg._id === messageId ? { ...msg, status } : msg
+            ),
+          }));
+        });
+
+        // bulk seen notification (optional)
+        socket.on("messagesSeen", ({ senderId, receiverId, messageIds }) => {
+          set((state) => ({
+            messages: state.messages.map((msg) =>
+              messageIds && messageIds.includes(msg._id)
+                ? { ...msg, status: "seen" }
+                : msg
+            ),
+          }));
         });
       },
 
@@ -215,17 +255,19 @@ export const useChatStore = create(
         socket.off("messageDeletedForEveryone");
         socket.off("userTyping");
         socket.off("userStopTyping");
+        socket.off("messageStatusUpdated");
+        socket.off("messagesSeen");
       },
 
-      // ------------------- TYPING EVENTS -------------------
+      // typing events
       sendTyping: (receiverId) => {
         const { socket } = useAuthStore.getState();
-        if (socket && receiverId) socket.emit("typing", receiverId);
+        if (socket && receiverId) socket.emit("typing", { to: receiverId });
       },
 
       sendStopTyping: (receiverId) => {
         const { socket } = useAuthStore.getState();
-        if (socket && receiverId) socket.emit("stopTyping", receiverId);
+        if (socket && receiverId) socket.emit("stopTyping", { to: receiverId });
       },
     }),
     {

@@ -1,15 +1,456 @@
+import mongoose from "mongoose";
+
+const messageSchema = new mongoose.Schema(
+  {
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    receiverId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+    },
+    text: {
+      type: String,
+    },
+    image: {
+      type: String,
+    },
+
+    // 🔹 For message status tracking
+    status: {
+      type: String,
+      enum: ["sent", "delivered", "seen"],
+      default: "sent",
+    },
+
+    // 🔹 For message deletion features
+    deletedFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    isDeletedForEveryone: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  { timestamps: true }
+);
+
+export default mongoose.model("Message", messageSchema);
+
+
+
+import { Server } from "socket.io";
+import http from "http";
+import express from "express";
+import Message from "../models/message.model.js"; // ✅ import message model
+
+const app = express();
+const server = http.createServer(app);
+
+// -------------------- SOCKET.IO --------------------
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:5173"], // frontend URL
+    methods: ["GET", "POST"],
+  },
+});
+
+// used to store online users
+const userSocketMap = {}; // { userId: socketId }
+
+// utility to get receiver socket id
+export function getReceiverSocketId(userId) {
+  return userSocketMap[userId];
+}
+
+// -------------------- SOCKET CONNECTION --------------------
+io.on("connection", (socket) => {
+  console.log("A user connected", socket.id);
+
+  // ✅ Save userId from query
+  const userId = socket.handshake.query.userId;
+  if (userId) userSocketMap[userId] = socket.id;
+
+  // ✅ Broadcast online users to all clients
+  io.emit("getOnlineUsers", Object.keys(userSocketMap));
+
+  // -------------------- TYPING INDICATOR --------------------
+  socket.on("typing", ({ to }) => {
+    const receiverSocketId = userSocketMap[to];
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("userTyping", {
+        userId: socket.handshake.query.userId,
+      });
+    }
+  });
+
+  socket.on("stopTyping", ({ to }) => {
+    const receiverSocketId = userSocketMap[to];
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("userStopTyping", {
+        userId: socket.handshake.query.userId,
+      });
+    }
+  });
+
+  // -------------------- MESSAGE DELIVERED --------------------
+  socket.on("messageDelivered", async ({ messageId }) => {
+    try {
+      const updatedMsg = await Message.findByIdAndUpdate(
+        messageId,
+        { status: "delivered" },
+        { new: true }
+      );
+
+      if (updatedMsg) {
+        const senderSocketId = userSocketMap[updatedMsg.senderId];
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageStatusUpdated", {
+            messageId: updatedMsg._id,
+            status: "delivered",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Error updating delivered:", err.message);
+    }
+  });
+
+  // -------------------- MESSAGE SEEN --------------------
+  socket.on("markMessagesAsSeen", async ({ senderId, receiverId }) => {
+    try {
+      await Message.updateMany(
+        { senderId, receiverId, status: { $ne: "seen" } },
+        { $set: { status: "seen" } }
+      );
+
+      const senderSocketId = userSocketMap[senderId];
+      const receiverSocketId = userSocketMap[receiverId];
+
+      // Notify sender that their messages are seen
+      if (senderSocketId) {
+        io.to(senderSocketId).emit("messagesSeen", { senderId, receiverId });
+      }
+
+      // Update receiver UI also (optional)
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("messagesSeen", { senderId, receiverId });
+      }
+    } catch (err) {
+      console.error("Error updating seen:", err.message);
+    }
+  });
+
+  // -------------------- DISCONNECT --------------------
+  socket.on("disconnect", () => {
+    console.log("A user disconnected", socket.id);
+    if (userId) delete userSocketMap[userId];
+    io.emit("getOnlineUsers", Object.keys(userSocketMap));
+  });
+});
+
+// -------------------- EXPORT --------------------
+export { io, app, server };
+
+
+
+/* eslint-disable no-unused-vars */
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import toast from "react-hot-toast";
+import { axiosInstance } from "../lib/axios";
+import { useAuthStore } from "./useAuthStore";
+
+export const useChatStore = create(
+  persist(
+    (set, get) => ({
+      messages: [],
+      users: [],
+      selectedUser: null,
+      selectedMessages: [],
+      isSelectMode: false,
+      isUsersLoading: false,
+      isMessagesLoading: false,
+      isSending: false,
+      isTyping: false,
+
+      // 🆕 Reply feature
+      replyTo: null,
+      setReplyTo: (msg) => set({ replyTo: msg }),
+      clearReply: () => set({ replyTo: null }),
+
+      // ------------------- BASIC SETTERS -------------------
+      setMessages: (messages) => set({ messages }),
+      setUsers: (users) => set({ users }),
+      setSelectedUser: (selectedUser) => set({ selectedUser }),
+      setIsTyping: (typing) => set({ isTyping: typing }),
+      setSelectedMessages: (selectedMessages) =>
+        set({
+          selectedMessages: Array.isArray(selectedMessages)
+            ? selectedMessages
+            : [],
+        }),
+      setIsSelectMode: (mode) => set({ isSelectMode: !!mode }),
+
+      // ------------------- USERS -------------------
+      getUsers: async () => {
+        set({ isUsersLoading: true });
+        try {
+          const authUser = useAuthStore.getState().authUser;
+          if (!authUser) return;
+
+          const contactsRes = await axiosInstance.get("/contacts");
+          const savedContacts = contactsRes.data.map((user) => ({
+            ...user,
+            isSaved: true,
+          }));
+
+          const recentRes = await axiosInstance.get("/messages/users");
+          const recentChats =
+            recentRes.data
+              ?.filter((u) => !savedContacts.find((c) => c._id === u._id))
+              ?.map((user) => ({ ...user, isSaved: false })) || [];
+
+          const mergedUsers = [...savedContacts, ...recentChats].filter(
+            (user) => user._id !== authUser._id
+          );
+
+          set({ users: mergedUsers });
+        } catch (error) {
+          console.error(error);
+          toast.error(error.response?.data?.message || "Failed to fetch users");
+        } finally {
+          set({ isUsersLoading: false });
+        }
+      },
+
+      // ------------------- MESSAGES -------------------
+      getMessages: async (userId) => {
+        set({ isMessagesLoading: true });
+        try {
+          const res = await axiosInstance.get(`/messages/${userId}`);
+          set({ messages: Array.isArray(res.data) ? res.data : [] });
+        } catch (error) {
+          toast.error(
+            error.response?.data?.message || "Failed to fetch messages"
+          );
+        } finally {
+          set({ isMessagesLoading: false });
+        }
+      },
+
+      // ------------------- SEND MESSAGE -------------------
+      sendMessage: async (messageData) => {
+        const { selectedUser, replyTo, setReplyTo } = get();
+        if (!selectedUser?._id) return;
+
+        try {
+          set({ isSending: true });
+          const payload = {
+            ...messageData,
+            replyTo: replyTo ? replyTo._id : null,
+          };
+
+          // ✅ Send message to backend
+          await axiosInstance.post(
+            `/messages/send/${selectedUser._id}`,
+            payload
+          );
+
+          // ✅ Clear reply state after sending
+          setReplyTo(null);
+
+          set({ isSending: false });
+          get().getUsers?.();
+        } catch (error) {
+          console.error(error);
+          set({ isSending: false });
+          toast.error(
+            error.response?.data?.message || "Failed to send message"
+          );
+        }
+      },
+
+      // ------------------- MULTI-DELETE -------------------
+      deleteSelectedMessages: async () => {
+        const {
+          selectedMessages,
+          selectedUser,
+          messages,
+          setSelectedMessages,
+        } = get();
+        if (!Array.isArray(selectedMessages) || selectedMessages.length === 0)
+          return;
+
+        try {
+          await Promise.all(
+            selectedMessages.map((msgId) =>
+              axiosInstance.delete(`/messages/${msgId}/for-me`)
+            )
+          );
+
+          set({
+            messages: messages.filter((m) => !selectedMessages.includes(m._id)),
+            selectedMessages: [],
+            isSelectMode: false,
+          });
+
+          toast.success("Messages deleted successfully");
+        } catch (err) {
+          console.error(err);
+          toast.error("Failed to delete messages");
+        }
+      },
+
+      // ------------------- SOCKET LISTENERS -------------------
+      subscribeToMessages: () => {
+        const { socket, authUser } = useAuthStore.getState();
+        if (!socket) return;
+
+        // Clear previous listeners
+        socket.off("newMessage");
+        socket.off("messageDeletedForMe");
+        socket.off("messageDeletedForEveryone");
+        socket.off("userTyping");
+        socket.off("userStopTyping");
+        socket.off("messageStatusUpdated");
+        socket.off("messagesSeen");
+
+        // 🆕 NEW MESSAGE
+        socket.on("newMessage", (newMessage) => {
+          const { selectedUser, messages } = get();
+
+          if (
+            selectedUser &&
+            (newMessage.senderId === selectedUser._id ||
+              newMessage.receiverId === selectedUser._id)
+          ) {
+            const safeMessages = Array.isArray(messages) ? messages : [];
+            const exists = safeMessages.some((m) => m._id === newMessage._id);
+            if (!exists) set({ messages: [...safeMessages, newMessage] });
+
+            // 🔹 Emit messageDelivered back to backend (receiver side)
+            if (authUser && newMessage.receiverId === authUser._id) {
+              socket.emit("messageDelivered", { messageId: newMessage._id });
+            }
+          }
+
+          get().getUsers();
+        });
+
+        // 🗑️ MESSAGE DELETE (For Me)
+        socket.on("messageDeletedForMe", (deletedMessageId) => {
+          const { messages } = get();
+          const safeMessages = Array.isArray(messages) ? messages : [];
+          set({
+            messages: safeMessages.filter((m) => m._id !== deletedMessageId),
+          });
+        });
+
+        // 🗑️ MESSAGE DELETE (For Everyone)
+        socket.on("messageDeletedForEveryone", (deletedMessage) => {
+          const { messages } = get();
+          const safeMessages = Array.isArray(messages) ? messages : [];
+          set({
+            messages: safeMessages.map((m) =>
+              m._id === deletedMessage._id
+                ? {
+                    ...m,
+                    text: "This message was deleted",
+                    isDeletedForEveryone: true,
+                  }
+                : m
+            ),
+          });
+        });
+
+        // ✏️ USER TYPING
+        socket.on("userTyping", ({ userId }) => {
+          const { selectedUser } = get();
+          if (selectedUser?._id === userId) set({ isTyping: true });
+        });
+
+        socket.on("userStopTyping", ({ userId }) => {
+          const { selectedUser } = get();
+          if (selectedUser?._id === userId) set({ isTyping: false });
+        });
+
+        // ✅ 🆕 MESSAGE STATUS UPDATED (delivered)
+        socket.on("messageStatusUpdated", ({ messageId, status }) => {
+          set((state) => ({
+            messages: state.messages.map((msg) =>
+              msg._id === messageId ? { ...msg, status } : msg
+            ),
+          }));
+        });
+
+        // ✅ 🆕 MESSAGES SEEN (seen by receiver)
+        socket.on("messagesSeen", ({ senderId, receiverId }) => {
+          const { selectedUser } = get();
+          if (!selectedUser) return;
+
+          // update messages in active chat
+          set((state) => ({
+            messages: state.messages.map((msg) => {
+              if (msg.senderId === senderId) {
+                return { ...msg, status: "seen" };
+              }
+              return msg;
+            }),
+          }));
+        });
+      },
+
+      unsubscribeFromMessages: () => {
+        const { socket } = useAuthStore.getState();
+        if (!socket) return;
+
+        socket.off("newMessage");
+        socket.off("messageDeletedForMe");
+        socket.off("messageDeletedForEveryone");
+        socket.off("userTyping");
+        socket.off("userStopTyping");
+        socket.off("messageStatusUpdated");
+        socket.off("messagesSeen");
+      },
+
+      // ------------------- TYPING EVENTS -------------------
+      sendTyping: (receiverId) => {
+        const { socket } = useAuthStore.getState();
+        if (socket && receiverId) socket.emit("typing", receiverId);
+      },
+
+      sendStopTyping: (receiverId) => {
+        const { socket } = useAuthStore.getState();
+        if (socket && receiverId) socket.emit("stopTyping", receiverId);
+      },
+    }),
+    {
+      name: "chat-storage",
+      partialize: (state) => ({
+        selectedUser: state.selectedUser,
+      }),
+    }
+  )
+);
+
+
+
 /* eslint-disable no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
 import { useEffect, useRef, useState } from "react";
-import {
-  FaTrash,
-  FaCopy,
-  FaEdit,
-  FaTimes,
-  FaReply,
-  FaCheck,
-  FaCheckDouble,
-} from "react-icons/fa";
+import { FaTrash, FaCopy, FaEdit, FaTimes, FaReply } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { useChatStore } from "../store/useChatStore";
@@ -55,79 +496,44 @@ const ChatContainer = () => {
   });
   const [zoomedImage, setZoomedImage] = useState(null);
 
-  // ✅ WhatsApp-like Status Icon Function
-  const renderStatusIcon = (status) => {
-    if (!status || status === "sent")
-      return <FaCheck size={11} className="text-gray-400" />;
-    if (status === "delivered")
-      return <FaCheckDouble size={11} className="text-gray-400" />;
-    if (status === "seen")
-      return <FaCheckDouble size={11} className="text-blue-500" />;
-    return null;
-  };
-
-  // helper: mark unseen messages in active chat as seen (calls API per message)
-  const markUnseenMessagesAsSeen = async () => {
-    try {
-      if (!Array.isArray(messages) || !authUser) return;
-      const unseen = messages.filter(
-        (m) =>
-          m.receiverId === authUser._id && (!m.status || m.status !== "seen")
-      );
-      for (const msg of unseen) {
-        await axiosInstance.put(`/messages/${msg._id}/mark-seen`);
-        useChatStore.setState((state) => ({
-          messages: state.messages.map((x) =>
-            x._id === msg._id ? { ...x, status: "seen" } : x
-          ),
-        }));
-      }
-    } catch (err) {
-      console.error("markUnseenMessagesAsSeen error:", err?.message);
-    }
-  };
-
+  // ------------------- FETCH MESSAGES -------------------
   useEffect(() => {
     if (!selectedUser?._id) return;
     getMessages(selectedUser._id);
     subscribeToMessages();
 
+    // mark unseen messages as seen
+    axiosInstance
+      .put(`/messages/${selectedUser._id}/mark-seen`)
+      .catch(() => {});
+
     return () => unsubscribeFromMessages();
   }, [selectedUser?._id]);
 
-  useEffect(() => {
-    if (!selectedUser?._id || !authUser?._id) return;
-    markUnseenMessagesAsSeen();
-  }, [messages, selectedUser, authUser]);
-
+  // ------------------- SOCKET SEEN STATUS -------------------
   useEffect(() => {
     if (!socket) return;
 
-    socket.off("messageStatusUpdated");
-    socket.on("messageStatusUpdated", ({ messageId, status }) => {
-      useChatStore.setState((state) => ({
-        messages: state.messages.map((m) =>
-          m._id === messageId ? { ...m, status } : m
-        ),
-      }));
+    socket.off("messageDelivered");
+    socket.off("messageSeen");
+
+    socket.on("messageDelivered", (msgId) => {
+      // update local message state
+      const updated = messages.map((m) =>
+        m._id === msgId ? { ...m, status: "delivered" } : m
+      );
+      useChatStore.setState({ messages: updated });
     });
 
-    socket.off("messagesSeen");
-    socket.on("messagesSeen", ({ messageIds }) => {
-      if (!Array.isArray(messageIds)) return;
-      useChatStore.setState((state) => ({
-        messages: state.messages.map((m) =>
-          messageIds.includes(m._id) ? { ...m, status: "seen" } : m
-        ),
-      }));
+    socket.on("messageSeen", (msgId) => {
+      const updated = messages.map((m) =>
+        m._id === msgId ? { ...m, status: "seen" } : m
+      );
+      useChatStore.setState({ messages: updated });
     });
+  }, [messages, socket]);
 
-    return () => {
-      socket.off("messageStatusUpdated");
-      socket.off("messagesSeen");
-    };
-  }, [socket]);
-
+  // ------------------- SCROLL DIRECTLY TO BOTTOM -------------------
   useEffect(() => {
     if (
       messageEndRef.current &&
@@ -138,6 +544,7 @@ const ChatContainer = () => {
     }
   }, [messages]);
 
+  // ------------------- CLOSE ACTION MODAL -------------------
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (actionRef.current && !actionRef.current.contains(e.target)) {
@@ -152,6 +559,7 @@ const ChatContainer = () => {
     };
   }, []);
 
+  // ------------------- RESPONSIVE MODAL -------------------
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth < 580) {
@@ -165,6 +573,7 @@ const ChatContainer = () => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // ------------------- EXIT SELECT MODE -------------------
   useEffect(() => {
     if (
       Array.isArray(selectedMessages) &&
@@ -175,6 +584,7 @@ const ChatContainer = () => {
     }
   }, [selectedMessages, isSelectMode]);
 
+  // ------------------- DELETE FUNCTIONS -------------------
   const handleDeleteForMe = async (msgId) => {
     try {
       await axiosInstance.delete(`/messages/${msgId}/for-me`);
@@ -212,6 +622,7 @@ const ChatContainer = () => {
     setShowActionsFor(null);
   };
 
+  // ------------------- REPLY FUNCTION -------------------
   const handleReply = (message) => {
     const msgText = message?.text ?? message?.message ?? "";
     const senderName =
@@ -231,6 +642,7 @@ const ChatContainer = () => {
     setShowActionsFor(null);
   };
 
+  // ------------------- TOUCH + LONG PRESS + DOUBLE TAP -------------------
   const handleTouchStart = (msgId) => {
     const currentTime = new Date().getTime();
     const tapLength = currentTime - lastTapRef.current;
@@ -261,6 +673,7 @@ const ChatContainer = () => {
     if (pressTimer.current) clearTimeout(pressTimer.current);
   };
 
+  // ------------------- LOADING SKELETON -------------------
   if (isMessagesLoading) {
     return (
       <div className="flex-1 flex flex-col overflow-auto">
@@ -271,10 +684,12 @@ const ChatContainer = () => {
     );
   }
 
+  // ------------------- CHAT UI -------------------
   return (
     <div className="flex-1 flex flex-col overflow-auto relative">
       <ChatHeader />
 
+      {/* Multi-select Toolbar */}
       {isSelectMode &&
         Array.isArray(selectedMessages) &&
         selectedMessages.length > 0 && (
@@ -302,6 +717,7 @@ const ChatContainer = () => {
           </div>
         )}
 
+      {/* Floating Action Modal */}
       <AnimatePresence>
         {showActionsFor && !isSelectMode && (
           <motion.div
@@ -360,6 +776,7 @@ const ChatContainer = () => {
         )}
       </AnimatePresence>
 
+      {/* Message List */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {(Array.isArray(messages) ? messages : []).map((message) => {
           const isSender = message.senderId === authUser._id;
@@ -474,10 +891,11 @@ const ChatContainer = () => {
                   {isDeleted ? "This message was deleted" : messageText}
                 </p>
 
-                {/* ✅ Status Icons Integrated Here */}
                 <div className="text-[10px] text-gray-400 text-end flex items-center justify-end gap-1">
                   <span>{formatMessageTime(message.createdAt)}</span>
-                  {isSender && renderStatusIcon(message.status)}
+                  {isSender && message.status === "sent" && "•"}
+                  {isSender && message.status === "delivered" && "✅"}
+                  {isSender && message.status === "seen" && "👀"}
                 </div>
               </div>
             </div>
@@ -512,6 +930,7 @@ const ChatContainer = () => {
 
       <MessageInput />
 
+      {/* Zoom Modal */}
       <AnimatePresence>
         {zoomedImage && (
           <motion.div
@@ -538,6 +957,7 @@ const ChatContainer = () => {
         )}
       </AnimatePresence>
 
+      {/* Delete Modal */}
       {showDeleteModal && (
         <div className="modal modal-open">
           <div className="modal-box w-80 max-w-[90vw] p-5">
