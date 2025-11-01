@@ -104,14 +104,21 @@ export const useChatStore = create(
           setReplyTo(null);
           set({ isSending: false });
 
-          // ❌ Removed getUsers() (was refreshing sidebar)
-          // get().getUsers?.();
-
-          // ✅ Just append new message locally
+          // ✅ append new message locally (only if unique)
           if (res?.data) {
-            set((state) => ({
-              messages: [...(state.messages || []), res.data],
-            }));
+            set((state) => {
+              const exists = state.messages.some(
+                (m) =>
+                  m._id === res.data._id ||
+                  (m.senderId === res.data.senderId &&
+                    m.content === res.data.content &&
+                    Math.abs(
+                      new Date(m.createdAt) - new Date(res.data.createdAt)
+                    ) < 2000)
+              );
+              if (exists) return state;
+              return { messages: [...state.messages, res.data] };
+            });
           }
         } catch (error) {
           console.error(error);
@@ -166,26 +173,36 @@ export const useChatStore = create(
         socket.off("messageStatusUpdated");
         socket.off("messagesSeen");
 
-        // ✅ New message arrived
+        // ✅ New message arrived (duplicate guard added)
         socket.on("newMessage", (newMessage) => {
           const { selectedUser, messages } = get();
+          const safeMessages = Array.isArray(messages) ? messages : [];
 
+          // 🚫 Prevent duplicates (for offline or delay cases)
+          const isDuplicate = safeMessages.some(
+            (m) =>
+              m._id === newMessage._id ||
+              (m.senderId === newMessage.senderId &&
+                m.content === newMessage.content &&
+                Math.abs(
+                  new Date(m.createdAt) - new Date(newMessage.createdAt)
+                ) < 2000)
+          );
+          if (isDuplicate) return;
+
+          // ✅ Add message if it's relevant to selected user
           if (
             selectedUser &&
             (newMessage.senderId === selectedUser._id ||
               newMessage.receiverId === selectedUser._id)
           ) {
-            const safeMessages = Array.isArray(messages) ? messages : [];
-            const exists = safeMessages.some((m) => m._id === newMessage._id);
-            if (!exists) set({ messages: [...safeMessages, newMessage] });
+            set({ messages: [...safeMessages, newMessage] });
 
-            // If current client is receiver, notify server that message is delivered
+            // Mark delivered if received
             if (authUser && newMessage.receiverId === authUser._id) {
               socket.emit("messageDelivered", { messageId: newMessage._id });
             }
           }
-
-          // ❌ Removed getUsers() (no need to refresh sidebar on each msg)
         });
 
         // message deleted for me
@@ -234,8 +251,8 @@ export const useChatStore = create(
           }));
         });
 
-        // bulk seen notification (optional)
-        socket.on("messagesSeen", ({ senderId, receiverId, messageIds }) => {
+        // bulk seen notification
+        socket.on("messagesSeen", ({ messageIds }) => {
           set((state) => ({
             messages: state.messages.map((msg) =>
               messageIds && messageIds.includes(msg._id)
